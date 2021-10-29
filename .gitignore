@@ -1,6 +1,6 @@
 # Ignoring Virtual Environment
-./rosbag-filter-ui/*
-./rosbag-filter-ui/**
+rosbag-filter-ui/*
+rosbag-filter-ui/**
 
 
 # Ignoring bag files
