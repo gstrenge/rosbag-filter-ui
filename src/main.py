@@ -1,9 +1,10 @@
 import rosbag
 from PyQt5 import QtCore, QtWidgets
-from PyQt5.QtWidgets import QAbstractScrollArea, QCheckBox, QFileDialog, QHBoxLayout, QMainWindow, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QApplication
+from PyQt5.QtWidgets import QAbstractScrollArea, QCheckBox, QFileDialog, QHBoxLayout, QMainWindow, QMessageBox, QPushButton, QRadioButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QApplication
 from dataclasses import dataclass
 from typing import Tuple, List, Dict
 import subprocess
+from datetime import datetime
 import os
 
 class CentralWidget(QWidget):
@@ -13,9 +14,7 @@ class CentralWidget(QWidget):
 
         self.tableWidget = QTableWidget(self)
         self.tableWidget.setSizeAdjustPolicy(QAbstractScrollArea.AdjustToContents)
-        self.tableHeaders = []
         self.clearTable()
-
 
         self.invertSelectionButton = QPushButton(self)
         self.invertSelectionButton.setText("Invert Selection")
@@ -24,34 +23,66 @@ class CentralWidget(QWidget):
         self.exportButton = QPushButton(self)
         self.exportButton.setText("Filter to new Rosbag")
 
+        self.displayOptions = QWidget()
+
+        self.displayByTopic = True
+        self.byTopicRadioButton = QRadioButton("By Topic")
+        self.byMessageTypeRadioButton = QRadioButton("By Message Type")
+
+        self.byTopicRadioButton.setChecked(True)
+        self.byTopicRadioButton.toggled.connect(self.onByTopicToggle)
+        self.byMessageTypeRadioButton.toggled.connect(self.onByMessageTypeToggle)
+
+        displayOptionsLayout = QHBoxLayout()
+        displayOptionsLayout.addWidget(self.byTopicRadioButton)
+        displayOptionsLayout.addWidget(self.byMessageTypeRadioButton)
+        self.displayOptions.setLayout(displayOptionsLayout)
+
         layout = QVBoxLayout(self)
         layout.addWidget(self.invertSelectionButton)
         layout.addWidget(self.exportButton)
+        layout.addWidget(self.displayOptions)
         layout.addWidget(self.tableWidget)
 
         self.setLayout(layout)
 
-    def setTableHeaders(self, headers):
-        self.tableHeaders = headers
 
     def clearTable(self):
-        self.tableWidget.clearContents()
-        self.checkboxWidgets = []
+        self.tableWidget.clear()
+        self.tableWidget.setRowCount(0)
+        self.tableWidget.setColumnCount(0)
+        self.checkboxWidgets = {}
+        self.tableHeaders = []
+
+    def initializeTable(self, rowCount, colCount, headers):
+        self.tableHeaders = headers
+        self.tableWidget.setRowCount(rowCount)
+        self.tableWidget.setColumnCount(colCount)
         self.tableWidget.setHorizontalHeaderLabels(self.tableHeaders)
 
-    def isSelected(self, index):
-        return self.checkboxWidgets[index].isChecked()
-
     def setDisableCheckboxes(self, isDisabled):
-        for checkboxWidget in self.checkboxWidgets:
+        for checkboxWidget in self.checkboxWidgets.keys():
             checkboxWidget.setDisabled(isDisabled)
 
+    def getSelectedTopics(self):
 
-    def setRow(self, row, fields):
-        # Need to fix
+        topics = []
+        for checkboxWidget in self.checkboxWidgets.keys():
+
+            if not checkboxWidget.isChecked():
+                continue
+
+            if self.displayByTopic:
+                topics.append(self.checkboxWidgets[checkboxWidget])
+            else:
+                messageType = self.checkboxWidgets[checkboxWidget]
+                topics.extend(self.messageTypeToTopicsDict[messageType])
+
+        return topics
+
+
+    def setRow(self, row, checkbox, fields):
         checkboxCellWidget = QWidget()
-        checkbox = QCheckBox()
-        self.checkboxWidgets.append(checkbox)
         layout = QHBoxLayout(checkboxCellWidget)
         layout.addWidget(checkbox)
         layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
@@ -64,16 +95,81 @@ class CentralWidget(QWidget):
         self.tableWidget.resizeColumnsToContents()
 
     def invertSelection(self):
-        for checkboxWidget in self.checkboxWidgets:
+        for checkboxWidget in self.checkboxWidgets.keys():
             checkboxWidget.setChecked(not checkboxWidget.isChecked())
+
+    def onByTopicToggle(self):
+        radioButton = self.sender()
+        if radioButton.isChecked():
+            self.displayByTopic = True
+            self.updateDisplay()
+
+    def onByMessageTypeToggle(self):
+        radioButton = self.sender()
+        if radioButton.isChecked():
+            self.displayByTopic = False
+            self.updateDisplay()
+
+    def updateDisplay(self):
+
+        if self.displayByTopic:
+
+            self.clearTable()
+            self.initializeTable(len(self.topics), 3, ("To Export", "Topic", "Message Type"))
+
+            row = 0
+
+            messageTypesSorted = list(self.messageTypes)
+            messageTypesSorted.sort()
+
+            for messageType in messageTypesSorted:
+
+                # Getting the topics of this type of message
+                topicsOfTypeSorted = list(self.messageTypeToTopicsDict[messageType])
+                topicsOfTypeSorted.sort()
+
+                for topic in topicsOfTypeSorted:
+                    checkbox = QCheckBox()
+                    self.checkboxWidgets[checkbox] = topic
+                    self.setRow(row, checkbox, (topic, messageType))
+                    row += 1
+
+        else:
+
+            self.clearTable()
+            self.initializeTable(len(self.messageTypes), 3, ("To Export", "Message Type", "Topics"))
+
+            row = 0
+
+            messageTypesSorted = list(self.messageTypes)
+            messageTypesSorted.sort()
+
+            for messageType in messageTypesSorted:
+
+                topicsOfTypeSorted = list(self.messageTypeToTopicsDict[messageType])
+                topicsOfTypeSorted.sort()
+
+                topicsOfTypeString = ",".join(topicsOfTypeSorted)
+
+                checkbox = QCheckBox()
+                self.checkboxWidgets[checkbox] = messageType
+
+                self.setRow(row, checkbox, (messageType, topicsOfTypeString))
+                row += 1
+
+
+    def displayRosbags(self, topics, messageTypes, messageTypeToTopicsDict):
+
+        self.topics = topics
+        self.messageTypes = messageTypes
+        self.messageTypeToTopicsDict = messageTypeToTopicsDict
+
+        self.updateDisplay()
+
 
 
 
 class MainWindow(QtWidgets.QMainWindow):
-
-    class DisplayMode:
-        BY_TOPIC = 0
-        BY_MESSAGE_TYPE = 1
 
     def __init__(self, parent=None):
 
@@ -90,33 +186,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fileMenu = self.menuBar().addMenu("File")
         self.loadBag = QtWidgets.QAction("Load Bagfile(s)", self)
         self.fileMenu.addAction(self.loadBag)
-
-        self.displayMode = MainWindow.DisplayMode.BY_TOPIC
-
-    def displayRosbags(self, rosbagList):
-        self.rosbags = rosbagList
-
-        if self.displayMode == MainWindow.DisplayMode.BY_TOPIC:
-
-            self.mainWidget.setTableHeaders(("To Export", "Topic", "Message Type"))
-            self.mainWidget.clearTable()
-
-            for rosbag in self.rosbags:
-                row = 0
-                for messageType in rosbag.messageTypes:
-                    for topic in rosbag.messageTypesToTopicsDict[messageType]:
-                        self.view.mainWidget.setRow(row, (topic, messageType))
-                        row += 1
-                break # Temporary
-
-        elif self.displayMode == MainWindow.DisplayMode.BY_MESSAGE_TYPE:
-
-            for rosbag in self.rosbags:
-                pass
-
-
-
-
 
 
     def promptForBagFiles(self):
@@ -189,6 +258,9 @@ class Controller:
             self.view.mainWidget.exportButton.setDisabled(True)
             self.view.mainWidget.invertSelectionButton.setDisabled(True)
 
+            self.view.mainWidget.byTopicRadioButton.setDisabled(True)
+            self.view.mainWidget.byMessageTypeRadioButton.setDisabled(True)
+
             self.view.mainWidget.setDisableCheckboxes(True)
 
         elif state == Controller.State.SELECTING_TOPICS:
@@ -197,6 +269,9 @@ class Controller:
             self.view.mainWidget.exportButton.setDisabled(False)
             self.view.mainWidget.invertSelectionButton.setDisabled(False)
 
+            self.view.mainWidget.byTopicRadioButton.setDisabled(False)
+            self.view.mainWidget.byMessageTypeRadioButton.setDisabled(False)
+
             self.view.mainWidget.setDisableCheckboxes(False)
 
         elif state == Controller.State.EXPORTING:
@@ -204,6 +279,9 @@ class Controller:
 
             self.view.mainWidget.exportButton.setDisabled(True)
             self.view.mainWidget.invertSelectionButton.setDisabled(True)
+
+            self.view.mainWidget.byTopicRadioButton.setDisabled(True)
+            self.view.mainWidget.byMessageTypeRadioButton.setDisabled(True)
 
             self.view.mainWidget.setDisableCheckboxes(True)
 
@@ -214,7 +292,19 @@ class Controller:
 
     def export(self):
 
-        bagFileSavePath = self.view.promptForSaveLocation()
+        exporting_topics = self.view.mainWidget.getSelectedTopics()
+
+        if len(exporting_topics) < 1:
+            self.view.warning("File Export Failed", "No Topics were selected to export")
+            return None
+
+        bagFileSavePathList = self.view.promptForSaveLocation()
+
+        if len(bagFileSavePathList) != 1:
+            self.view.warning("File Export Failed", "Can only select one directory to save to")
+            return None
+
+        bagFileSavePath = bagFileSavePathList[0]
 
         if bagFileSavePath == "":
             self.view.warning("File Export Failed", "Need to select save locataion in order to export bag files")
@@ -222,18 +312,17 @@ class Controller:
 
         self.__transition(Controller.State.EXPORTING)
 
-        exporting_topics = []
-        for index, topic in enumerate(self.orderedTopics):
-            if self.view.mainWidget.isSelected(index):
-                exporting_topics.append(topic)
 
-        bagFileSavePath = bagFileSavePath[0]
-
-        command = self.generate_rosbag_filter_command(self.rosbags[0].filename, bagFileSavePath, exporting_topics)
-
-        os.system(" ".join(command))
+        for rosbag in self.rosbags:
+            filename = "".join(os.path.basename(rosbag.filename).split(".")[:-1]) + "_filtered_" + datetime.now().strftime("%Y_%m_%d-%I:%M:%S_%p") + ".bag"
+            bagFileSavePathIncludingFile = os.path.join(bagFileSavePath, filename)
+            command = self.generate_rosbag_filter_command(rosbag.filename, bagFileSavePathIncludingFile, exporting_topics)
+            commandStr = " ".join(command)
+            print(commandStr)
+            os.system(commandStr)
 
         self.view.message("Success", f"Rosbag exported successfully: {bagFileSavePath}")
+
 
         self.__transition(Controller.State.SELECTING_TOPICS)
 
@@ -251,8 +340,10 @@ class Controller:
             self.view.warning("File Open Failed", "Invalid Bag File")
             return None
 
-
         self.rosbags = []
+        self.allTopics = set()
+        allMessageTypes = set()
+        allMessageTypesToTopicsDict = dict()
 
         for bagFilePath in bagFilePaths:
             bag = rosbag.Bag(bagFilePath)
@@ -263,12 +354,20 @@ class Controller:
             topics.sort()
             topics = tuple(topics)
 
+            self.allTopics.update(topics)
+
             # Dictionary of message type -> topic name
             messageTypeDict : Dict[str, List[str]]= {}
 
             # Populating messageTypeDict
             for topic in topics:
                 messageType = topicDict[topic].msg_type
+
+                if messageType not in allMessageTypesToTopicsDict.keys():
+                    allMessageTypesToTopicsDict[messageType] = set()
+
+                allMessageTypesToTopicsDict[messageType].add(topic)
+
 
                 # If this is the first topic that we have found to be publishing this type of message
                 if messageType not in messageTypeDict.keys():
@@ -280,8 +379,13 @@ class Controller:
             messageTypes.sort()
             messageTypes = tuple(messageTypes)
 
+            allMessageTypes.update(messageTypes)
+
             self.rosbags.append(RosbagData(bagFilePath, topics, messageTypes, messageTypeDict))
 
+        self.view.mainWidget.displayRosbags(self.allTopics, allMessageTypes, allMessageTypesToTopicsDict)
+
+        """
         bag = self.rosbags[0]
         self.view.mainWidget.tableWidget.setRowCount(len(bag.topics))
         self.view.mainWidget.tableWidget.setColumnCount(3)
@@ -295,9 +399,9 @@ class Controller:
                 self.view.mainWidget.setRow(row, topic, messageType)
                 self.orderedTopics.append(topic)
                 row += 1
+        """
 
         self.__transition(Controller.State.SELECTING_TOPICS)
-
 
 @dataclass
 class RosbagData:
@@ -309,9 +413,6 @@ class RosbagData:
 
     def setExporting(self, willExport):
         self.exporting = willExport
-
-
-
 
 
 
